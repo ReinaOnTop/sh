@@ -19,7 +19,7 @@ form.addEventListener("submit", async (event) => {
   button.disabled = true;
 
   try {
-    const response = await fetch("https://ngl.link/ujangkraz1", {
+    const response = await fetch("https://ngl.link/submit", {
       method: "POST",
       headers: {
         "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
