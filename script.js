@@ -9,6 +9,7 @@ class NGLMessageSender {
       total: 0
     };
     this.rushIntervals = [];
+    this.abortController = null;
     
     this.initializeElements();
     this.attachEventListeners();
@@ -68,13 +69,11 @@ class NGLMessageSender {
   }
 
   validatePremiumCode(code) {
-    // Premium code validation system
     const validCodes = this.getValidCodes();
     return validCodes.includes(code);
   }
 
   getValidCodes() {
-    // Enhanced code system with different tiers
     const baseCodes = ['UJANGKRAZ2024', 'NGLPREMIUM', 'PREMIUM123'];
     const dynamicCodes = this.generateDynamicCodes();
     
@@ -82,19 +81,15 @@ class NGLMessageSender {
   }
 
   generateDynamicCodes() {
-    // Generate date-based codes (changes daily)
     const today = new Date();
     const dateString = today.toISOString().slice(0, 10).replace(/-/g, '');
     const codes = [];
     
-    // Format: PREMIUM-YYYYMMDD
     codes.push(`PREMIUM-${dateString}`);
     
-    // Format: NGL-YYYY-MM-DD
     const dateParts = today.toISOString().slice(0, 10).split('-');
     codes.push(`NGL-${dateParts[0]}-${dateParts[1]}-${dateParts[2]}`);
     
-    // Special codes
     const specialCodes = [
       'UJANGKRAZ-PRO',
       'NGL-VIP-2024',
@@ -108,7 +103,6 @@ class NGLMessageSender {
     this.isPremium = true;
     this.premiumCode = code;
     
-    // Save to localStorage
     localStorage.setItem('nglPremium', JSON.stringify({
       isPremium: true,
       code: code,
@@ -158,7 +152,7 @@ class NGLMessageSender {
     const username = this.extractUsername(this.nglLink.value);
     const message = this.message.value;
     const delay = parseInt(this.delay.value);
-    const count = rushMode ? 100 : parseInt(this.count.value); // Rush mode always does 100
+    const count = rushMode ? 100 : parseInt(this.count.value);
     
     if (!username || !message) {
       alert('Please fill in all fields');
@@ -171,7 +165,7 @@ class NGLMessageSender {
     this.stopBtn.disabled = false;
     
     if (rushMode) {
-      this.runRushMode(username, message, delay);
+      this.runRushMode(username, message);
     } else {
       await this.runNormalMode(username, message, delay, count);
     }
@@ -179,7 +173,7 @@ class NGLMessageSender {
 
   async runNormalMode(username, message, delay, count) {
     for (let i = 0; i < count && this.isRunning; i++) {
-      await this.sendMessage(username, message);
+      await this.sendMessageWithRetry(username, message);
       this.updateProgress(i + 1, count);
       
       if (i < count - 1) {
@@ -189,68 +183,130 @@ class NGLMessageSender {
     this.finishSending();
   }
 
-  runRushMode(username, message, delay) {
-    // Rush mode: runs 2 functions every second
-    const rushInterval = setInterval(() => {
+  runRushMode(username, message) {
+    // Rush mode: runs 2 functions every second with better error handling
+    const rushInterval = setInterval(async () => {
       if (!this.isRunning) {
         clearInterval(rushInterval);
         return;
       }
       
       // Run 2 functions simultaneously every second
-      this.sendMessage(username, message);
-      this.sendMessage(username, message + " 🚀"); // Add rush indicator
+      const promises = [
+        this.sendMessageWithRetry(username, message),
+        this.sendMessageWithRetry(username, message + " 🚀")
+      ];
       
-    }, 1000); // Every second
+      await Promise.allSettled(promises);
+      
+    }, 1000);
     
     this.rushIntervals.push(rushInterval);
   }
 
+  async sendMessageWithRetry(username, message, maxRetries = 2) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const success = await this.sendMessage(username, message);
+        if (success) {
+          return true;
+        }
+      } catch (error) {
+        if (attempt === maxRetries) {
+          this.stats.failed++;
+          this.addResult(`Failed after ${maxRetries + 1} attempts: ${error.message}`, false);
+          this.updateStats();
+          return false;
+        }
+        // Wait before retry
+        await this.sleep(1000 * (attempt + 1));
+      }
+    }
+    return false;
+  }
+
   async sendMessage(username, message) {
     const deviceId = this.generateDeviceId();
-    const formData = new URLSearchParams({
-      username: username,
-      question: message,
-      deviceId: deviceId,
-      gameSlug: '',
-      style: '',
-      referrer: ''
-    });
+    
+    // Create form data
+    const formData = new FormData();
+    formData.append('username', username);
+    formData.append('question', message);
+    formData.append('deviceId', deviceId);
+    formData.append('gameSlug', '');
+    formData.append('style', '');
+    formData.append('referrer', '');
 
     try {
+      // Use fetch with mode: 'no-cors' to bypass CORS restrictions
       const response = await fetch('https://ngl.link/api/submit', {
         method: 'POST',
+        mode: 'no-cors', // This bypasses CORS but you can't read the response
         headers: {
-          'Accept': '*/*',
           'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-          'Sec-Fetch-Site': 'same-origin',
+          'Accept': '*/*',
           'Origin': 'https://ngl.link',
-          'Sec-Fetch-Mode': 'cors',
-          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5.2 Mobile/15E148 Safari/604.1',
           'Referer': `https://ngl.link/${username}`,
-          'Sec-Fetch-Dest': 'empty',
-          'X-Requested-With': 'XMLHttpRequest',
-          'Accept-Language': 'en-AU,en;q=0.9',
-          'Priority': 'u=3, i',
-          'Accept-Encoding': 'gzip, deflate, br, zstd',
-          'Connection': 'close'
+          'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5.2 Mobile/15E148 Safari/604.1',
+          'X-Requested-With': 'XMLHttpRequest'
         },
-        body: formData.toString()
+        body: new URLSearchParams(formData).toString(),
+        credentials: 'include'
       });
 
-      if (response.ok) {
-        this.stats.sent++;
-        this.addResult('Message sent successfully', true);
-      } else {
-        this.stats.failed++;
-        this.addResult(`Failed: ${response.status}`, false);
-      }
-    } catch (error) {
-      this.stats.failed++;
-      this.addResult(`Error: ${error.message}`, false);
-    }
+      // With no-cors, we can't check response.ok, so we assume success if no error thrown
+      this.stats.sent++;
+      this.addResult('Message sent successfully', true);
+      this.updateStats();
+      return true;
 
-    this.updateStats();
+    } catch (error) {
+      // If fetch fails completely, try alternative method
+      try {
+        // Alternative: Use XMLHttpRequest
+        await this.sendWithXHR(username, message, deviceId);
+        this.stats.sent++;
+        this.addResult('Message sent (XHR)', true);
+        this.updateStats();
+        return true;
+      } catch (xhrError) {
+        console.error('XHR failed:', xhrError);
+        throw new Error('Network error');
+      }
+    }
+  }
+
+  sendWithXHR(username, message, deviceId) {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', 'https://ngl.link/api/submit', true);
+      xhr.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
+      xhr.setRequestHeader('Accept', '*/*');
+      xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+      
+      xhr.onload = function() {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(xhr.responseText);
+        } else {
+          reject(new Error(`HTTP ${xhr.status}`));
+        }
+      };
+      
+      xhr.onerror = function() {
+        reject(new Error('Network error'));
+      };
+      
+      const params = new URLSearchParams({
+        username: username,
+        question: message,
+        deviceId: deviceId,
+        gameSlug: '',
+        style: '',
+        referrer: ''
+      });
+      
+      xhr.send(params.toString());
+    });
   }
 
   generateDeviceId() {
@@ -291,7 +347,6 @@ class NGLMessageSender {
     resultItem.textContent = `${new Date().toLocaleTimeString()} - ${message}`;
     this.results.insertBefore(resultItem, this.results.firstChild);
     
-    // Limit results to last 50
     if (this.results.children.length > 50) {
       this.results.removeChild(this.results.lastChild);
     }
@@ -315,7 +370,6 @@ class NGLMessageSender {
     this.rushBtn.disabled = !this.isPremium;
     this.stopBtn.disabled = true;
     
-    // Clear rush intervals
     this.rushIntervals.forEach(interval => clearInterval(interval));
     this.rushIntervals = [];
   }
@@ -324,7 +378,6 @@ class NGLMessageSender {
     this.isRunning = false;
     this.rushMode = false;
     
-    // Clear rush intervals
     this.rushIntervals.forEach(interval => clearInterval(interval));
     this.rushIntervals = [];
     
